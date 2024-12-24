@@ -5,6 +5,13 @@ from functools import partial
 import math
 from timm.models.layers import trunc_normal_tf_
 from timm.models.helpers import named_apply
+from fvcore.nn import FlopCountAnalysis
+from contextlib import redirect_stderr
+import io
+
+import sys  
+sys.path.append('./..')  # Assuming test.ipynb is in the lib directory  
+from moga.sinanet.modifiedmoganet import MogaBlock
 
 
 def gcd(a, b):
@@ -313,6 +320,11 @@ class SAB(nn.Module):
 
 #   Efficient multi-scale convolutional attention decoding (EMCAD)
 class EMCAD(nn.Module):
+    """
+    The Efficient multi-scale convolutional attention decoding (EMCAD) module.
+
+    Parameters: 5.17 M,	FLOPs: 19.73 G
+    """
     def __init__(self, channels=[512,320,128,64], kernel_sizes=[1,3,5], expansion_factor=6, dw_parallel=True, add=True, lgag_ks=3, activation='relu6'):
         super(EMCAD,self).__init__()
         eucb_ks = 3 # kernel size for eucb
@@ -388,3 +400,468 @@ class EMCAD(nn.Module):
         d1 = self.mscb1(d1)
         
         return [d4, d3, d2, d1]
+
+
+class EMCADv2(nn.Module):
+    """
+    Efficient multi-scale convolutional attention decoding (EMCAD)
+    
+    This version of EMCAD uses the modified MogaBlock from Sinanet.
+    The other components are the same as EMCAD.
+
+    Parameters: 5.03 M,	FLOPs: 17.90 G
+
+
+    """
+    def __init__(self, channels=[512,320,128,64], kernel_sizes=[1,3,5], expansion_factor=6, dw_parallel=True, add=True, lgag_ks=3, activation='relu6'):
+        super(EMCADv2,self).__init__()
+        eucb_ks = 3 # kernel size for eucb
+        self.moga4 = MogaBlock(embed_dims= channels[0], 
+                               ffn_ratio=4, drop_rate= 0, 
+                               drop_path_rate=0, 
+                               act_type='GELU',
+                               norm_type="BN",
+                               init_value= 1e-6,
+                               attn_dw_dilation= [1,2,3],
+                               attn_channel_split= [1,3,4],
+                               attn_act_type= "SiLU",
+                               attn_force_fp32= False)
+        	
+        self.eucb3 = EUCB(in_channels=channels[0], 
+                          out_channels=channels[1], 
+                          kernel_size=eucb_ks, 
+                          stride=eucb_ks//2)
+        
+        self.lgag3 = LGAG(F_g=channels[1], 
+                          F_l=channels[1], 
+                          F_int=channels[1]//2, 
+                          kernel_size=lgag_ks, 
+                          groups=channels[1]//2)
+        
+        self.moga3 = MogaBlock(embed_dims= channels[1], 
+                               ffn_ratio=4, drop_rate= 0, 
+                               drop_path_rate=0, 
+                               act_type='GELU',
+                               norm_type="BN",
+                               init_value= 1e-6,
+                               attn_dw_dilation= [1,2,3],
+                               attn_channel_split= [1,3,4],
+                               attn_act_type= "SiLU",
+                               attn_force_fp32= False)
+        	
+        self.eucb2 = EUCB(in_channels=channels[1], 
+                          out_channels=channels[2], 
+                          kernel_size=eucb_ks, 
+                          stride=eucb_ks//2)
+        
+        self.lgag2 = LGAG(F_g=channels[2], 
+                          F_l=channels[2], 
+                          F_int=channels[2]//2, 
+                          kernel_size=lgag_ks, 
+                          groups=channels[2]//2)
+        
+        self.moga2 = MogaBlock(embed_dims= channels[2], 
+                               ffn_ratio=4, drop_rate= 0, 
+                               drop_path_rate=0, 
+                               act_type='GELU',
+                               norm_type="BN",
+                               init_value= 1e-6,
+                               attn_dw_dilation= [1,2,3],
+                               attn_channel_split= [1,3,4],
+                               attn_act_type= "SiLU",
+                               attn_force_fp32= False)
+        
+        self.eucb1 = EUCB(in_channels=channels[2], out_channels=channels[3], kernel_size=eucb_ks, stride=eucb_ks//2)
+        self.lgag1 = LGAG(F_g=channels[3], F_l=channels[3], F_int=int(channels[3]/2), kernel_size=lgag_ks, groups=int(channels[3]/2))
+
+        self.moga1 = MogaBlock(embed_dims= channels[3], 
+                               ffn_ratio=4, drop_rate= 0, 
+                               drop_path_rate=0, 
+                               act_type='GELU',
+                               norm_type="BN",
+                               init_value= 1e-6,
+                               attn_dw_dilation= [1,2,3],
+                               attn_channel_split= [1,3,4],
+                               attn_act_type= "SiLU",
+                               attn_force_fp32= False)
+        
+        self.cab4 = CAB(channels[0])
+        self.cab3 = CAB(channels[1])
+        self.cab2 = CAB(channels[2])
+        self.cab1 = CAB(channels[3])
+        
+        self.sab = SAB()
+       
+      
+    def forward(self, x, skips):
+            
+        # MSCAM4
+        d4 = self.cab4(x)*x
+        d4 = self.sab(d4)*d4 
+        d4 = self.moga4(d4)
+        
+        # EUCB3
+        d3 = self.eucb3(d4)
+        
+
+        # LGAG3
+        x3 = self.lgag3(g=d3, x=skips[0])
+        
+        # Additive aggregation 3
+        d3 = d3 + x3
+        
+        # MSCAM3
+        d3 = self.cab3(d3)*d3
+        d3 = self.sab(d3)*d3  
+        d3 = self.moga3(d3)
+        # print(d3.shape)
+        
+        # EUCB2
+        d2 = self.eucb2(d3)
+        # print(d2.shape)
+        
+        # LGAG2
+        x2 = self.lgag2(g=d2, x=skips[1])
+        
+        # Additive aggregation 2
+        d2 = d2 + x2 
+        
+        # MSCAM2
+        d2 = self.cab2(d2)*d2
+        d2 = self.sab(d2)*d2
+        d2 = self.moga2(d2)
+        # print(d2.shape)
+        
+        # EUCB1
+        d1 = self.eucb1(d2)
+        
+        # LGAG1
+        x1 = self.lgag1(g=d1, x=skips[2])
+        
+        # Additive aggregation 1
+        d1 = d1 + x1 
+        
+        # MSCAM1
+        d1 = self.cab1(d1)*d1
+        d1 = self.sab(d1)*d1
+        d1 = self.moga1(d1)
+        
+        return [d4, d3, d2, d1]
+    
+class EMCADv3(nn.Module):
+    """
+    Efficient multi-scale convolutional attention decoding (EMCAD)
+    
+    This version of EMCAD uses the modified MogaBlock from Sinanet and excluded the CAB and SAB layers.
+    The other components are the same as EMCAD.
+
+    Parameters: 4.98 M,	FLOPs: 17.88 G
+
+
+    """
+    def __init__(self, channels=[512,320,128,64], kernel_sizes=[1,3,5], expansion_factor=6, dw_parallel=True, add=True, lgag_ks=3, activation='relu6'):
+        super(EMCADv3,self).__init__()
+        eucb_ks = 3 # kernel size for eucb
+        self.moga4 = MogaBlock(embed_dims= channels[0], 
+                               ffn_ratio=4, drop_rate= 0, 
+                               drop_path_rate=0, 
+                               act_type='GELU',
+                               norm_type="BN",
+                               init_value= 1e-6,
+                               attn_dw_dilation= [1,2,3],
+                               attn_channel_split= [1,3,4],
+                               attn_act_type= "SiLU",
+                               attn_force_fp32= False)
+        	
+        self.eucb3 = EUCB(in_channels=channels[0], 
+                          out_channels=channels[1], 
+                          kernel_size=eucb_ks, 
+                          stride=eucb_ks//2)
+        
+        self.lgag3 = LGAG(F_g=channels[1], 
+                          F_l=channels[1], 
+                          F_int=channels[1]//2, 
+                          kernel_size=lgag_ks, 
+                          groups=channels[1]//2)
+        
+        self.moga3 = MogaBlock(embed_dims= channels[1], 
+                               ffn_ratio=4, drop_rate= 0, 
+                               drop_path_rate=0, 
+                               act_type='GELU',
+                               norm_type="BN",
+                               init_value= 1e-6,
+                               attn_dw_dilation= [1,2,3],
+                               attn_channel_split= [1,3,4],
+                               attn_act_type= "SiLU",
+                               attn_force_fp32= False)
+        	
+        self.eucb2 = EUCB(in_channels=channels[1], 
+                          out_channels=channels[2], 
+                          kernel_size=eucb_ks, 
+                          stride=eucb_ks//2)
+        
+        self.lgag2 = LGAG(F_g=channels[2], 
+                          F_l=channels[2], 
+                          F_int=channels[2]//2, 
+                          kernel_size=lgag_ks, 
+                          groups=channels[2]//2)
+        
+        self.moga2 = MogaBlock(embed_dims= channels[2], 
+                               ffn_ratio=4, drop_rate= 0, 
+                               drop_path_rate=0, 
+                               act_type='GELU',
+                               norm_type="BN",
+                               init_value= 1e-6,
+                               attn_dw_dilation= [1,2,3],
+                               attn_channel_split= [1,3,4],
+                               attn_act_type= "SiLU",
+                               attn_force_fp32= False)
+        
+        self.eucb1 = EUCB(in_channels=channels[2], out_channels=channels[3], kernel_size=eucb_ks, stride=eucb_ks//2)
+        self.lgag1 = LGAG(F_g=channels[3], F_l=channels[3], F_int=int(channels[3]/2), kernel_size=lgag_ks, groups=int(channels[3]/2))
+
+        self.moga1 = MogaBlock(embed_dims= channels[3], 
+                               ffn_ratio=4, drop_rate= 0, 
+                               drop_path_rate=0, 
+                               act_type='GELU',
+                               norm_type="BN",
+                               init_value= 1e-6,
+                               attn_dw_dilation= [1,2,3],
+                               attn_channel_split= [1,3,4],
+                               attn_act_type= "SiLU",
+                               attn_force_fp32= False)
+        
+        # self.cab4 = CAB(channels[0])
+        # self.cab3 = CAB(channels[1])
+        # self.cab2 = CAB(channels[2])
+        # self.cab1 = CAB(channels[3])
+        
+        # self.sab = SAB()
+       
+      
+    def forward(self, x, skips):
+            
+        # MSCAM4
+        # d4 = self.cab4(x)*x
+        # d4 = self.sab(d4)*d4 
+        d4 = self.moga4(x)
+        
+        # EUCB3
+        d3 = self.eucb3(d4)
+        
+
+        # LGAG3
+        x3 = self.lgag3(g=d3, x=skips[0])
+        
+        # Additive aggregation 3
+        d3 = d3 + x3
+        
+        # MSCAM3
+        # d3 = self.cab3(d3)*d3
+        # d3 = self.sab(d3)*d3  
+        d3 = self.moga3(d3)
+        # print(d3.shape)
+        
+        # EUCB2
+        d2 = self.eucb2(d3)
+        # print(d2.shape)
+        
+        # LGAG2
+        x2 = self.lgag2(g=d2, x=skips[1])
+        
+        # Additive aggregation 2
+        d2 = d2 + x2 
+        
+        # MSCAM2
+        # d2 = self.cab2(d2)*d2
+        # d2 = self.sab(d2)*d2
+        d2 = self.moga2(d2)
+        # print(d2.shape)
+        
+        # EUCB1
+        d1 = self.eucb1(d2)
+        
+        # LGAG1
+        x1 = self.lgag1(g=d1, x=skips[2])
+        
+        # Additive aggregation 1
+        d1 = d1 + x1 
+        
+        # MSCAM1
+        # d1 = self.cab1(d1)*d1
+        # d1 = self.sab(d1)*d1
+        d1 = self.moga1(d1)
+        
+        return [d4, d3, d2, d1]
+    
+class EMCADv3(nn.Module):
+    """
+    Efficient multi-scale convolutional attention decoding (EMCAD)
+    
+    This version of EMCAD uses the modified MogaBlock from Sinanet and excluded the CAB, SAB layers, and Deep supervision.
+    The other components are the same as EMCAD.
+
+    Parameters: 4.98 M,	FLOPs: 17.88 G
+
+
+    """
+    def __init__(self, channels=[512,320,128,64], kernel_sizes=[1,3,5], expansion_factor=6, dw_parallel=True, add=True, lgag_ks=3, activation='relu6'):
+        super(EMCADv3,self).__init__()
+        eucb_ks = 3 # kernel size for eucb
+        self.moga4 = MogaBlock(embed_dims= channels[0], 
+                               ffn_ratio=4, drop_rate= 0, 
+                               drop_path_rate=0, 
+                               act_type='GELU',
+                               norm_type="BN",
+                               init_value= 1e-6,
+                               attn_dw_dilation= [1,2,3],
+                               attn_channel_split= [1,3,4],
+                               attn_act_type= "SiLU",
+                               attn_force_fp32= False)
+        	
+        self.eucb3 = EUCB(in_channels=channels[0], 
+                          out_channels=channels[1], 
+                          kernel_size=eucb_ks, 
+                          stride=eucb_ks//2)
+        
+        self.lgag3 = LGAG(F_g=channels[1], 
+                          F_l=channels[1], 
+                          F_int=channels[1]//2, 
+                          kernel_size=lgag_ks, 
+                          groups=channels[1]//2)
+        
+        self.moga3 = MogaBlock(embed_dims= channels[1], 
+                               ffn_ratio=4, drop_rate= 0, 
+                               drop_path_rate=0, 
+                               act_type='GELU',
+                               norm_type="BN",
+                               init_value= 1e-6,
+                               attn_dw_dilation= [1,2,3],
+                               attn_channel_split= [1,3,4],
+                               attn_act_type= "SiLU",
+                               attn_force_fp32= False)
+        	
+        self.eucb2 = EUCB(in_channels=channels[1], 
+                          out_channels=channels[2], 
+                          kernel_size=eucb_ks, 
+                          stride=eucb_ks//2)
+        
+        self.lgag2 = LGAG(F_g=channels[2], 
+                          F_l=channels[2], 
+                          F_int=channels[2]//2, 
+                          kernel_size=lgag_ks, 
+                          groups=channels[2]//2)
+        
+        self.moga2 = MogaBlock(embed_dims= channels[2], 
+                               ffn_ratio=4, drop_rate= 0, 
+                               drop_path_rate=0, 
+                               act_type='GELU',
+                               norm_type="BN",
+                               init_value= 1e-6,
+                               attn_dw_dilation= [1,2,3],
+                               attn_channel_split= [1,3,4],
+                               attn_act_type= "SiLU",
+                               attn_force_fp32= False)
+        
+        self.eucb1 = EUCB(in_channels=channels[2], out_channels=channels[3], kernel_size=eucb_ks, stride=eucb_ks//2)
+        self.lgag1 = LGAG(F_g=channels[3], F_l=channels[3], F_int=int(channels[3]/2), kernel_size=lgag_ks, groups=int(channels[3]/2))
+
+        self.moga1 = MogaBlock(embed_dims= channels[3], 
+                               ffn_ratio=4, drop_rate= 0, 
+                               drop_path_rate=0, 
+                               act_type='GELU',
+                               norm_type="BN",
+                               init_value= 1e-6,
+                               attn_dw_dilation= [1,2,3],
+                               attn_channel_split= [1,3,4],
+                               attn_act_type= "SiLU",
+                               attn_force_fp32= False)
+        
+        # self.cab4 = CAB(channels[0])
+        # self.cab3 = CAB(channels[1])
+        # self.cab2 = CAB(channels[2])
+        # self.cab1 = CAB(channels[3])
+        
+        # self.sab = SAB()
+       
+      
+    def forward(self, x, skips):
+            
+        # MSCAM4
+        # d4 = self.cab4(x)*x
+        # d4 = self.sab(d4)*d4 
+        d4 = self.moga4(x)
+        
+        # EUCB3
+        d3 = self.eucb3(d4)
+        
+
+        # LGAG3
+        x3 = self.lgag3(g=d3, x=skips[0])
+        
+        # Additive aggregation 3
+        d3 = d3 + x3
+        
+        # MSCAM3
+        # d3 = self.cab3(d3)*d3
+        # d3 = self.sab(d3)*d3  
+        d3 = self.moga3(d3)
+        # print(d3.shape)
+        
+        # EUCB2
+        d2 = self.eucb2(d3)
+        # print(d2.shape)
+        
+        # LGAG2
+        x2 = self.lgag2(g=d2, x=skips[1])
+        
+        # Additive aggregation 2
+        d2 = d2 + x2 
+        
+        # MSCAM2
+        # d2 = self.cab2(d2)*d2
+        # d2 = self.sab(d2)*d2
+        d2 = self.moga2(d2)
+        # print(d2.shape)
+        
+        # EUCB1
+        d1 = self.eucb1(d2)
+        
+        # LGAG1
+        x1 = self.lgag1(g=d1, x=skips[2])
+        
+        # Additive aggregation 1
+        d1 = d1 + x1 
+        
+        # MSCAM1
+        # d1 = self.cab1(d1)*d1
+        # d1 = self.sab(d1)*d1
+        d1 = self.moga1(d1)
+        
+        return d1
+    
+if __name__ == '__main__':
+    # Test the EMCAD module
+    model = EMCADv3().cuda()
+
+    input_tensor = torch.randn(1, 512, 32, 32).cuda()
+    skips = [torch.randn(1, 320, 64, 64).cuda(), torch.randn(1, 128, 128, 128).cuda(), torch.randn(1, 64, 256, 256).cuda()]
+    # print(model(input_tensor, skips))
+
+
+
+    def print_param_flops_skips(net, input_shape):
+        x = torch.randn(1, *input_shape).to("cuda")
+        skips = [torch.randn(1, 320, 64, 64).cuda(), 
+                 torch.randn(1, 128, 128, 128).cuda(), 
+                 torch.randn(1, 64, 256, 256).cuda()]
+        
+        params = sum(p.numel() for p in net.parameters() if p.requires_grad)
+
+        with redirect_stderr(io.StringIO()):
+            flops = FlopCountAnalysis(net, (x, skips))
+            flops_amount = flops.total()
+
+        print(f"Parameters: {params/1e6:.2f} M,\tFLOPs: {flops_amount/1e9:.2f} G")
+
+    print_param_flops_skips(model, (512, 32, 32))
