@@ -7,8 +7,8 @@ import torch
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
 
-from lib.networks import EMCADNet
-from EMCAD.trainer import trainer_synapse
+from lib.networks import EMCADNetv3 as EMCADNet
+from EMCAD.trainer_nodeep import trainer_synapse
 
 parser = argparse.ArgumentParser()
 
@@ -115,7 +115,15 @@ if __name__ == "__main__":
     if not os.path.exists(snapshot_path):
         os.makedirs(snapshot_path)
     
-    model = EMCADNet(num_classes=args.num_classes, kernel_sizes=args.kernel_sizes, expansion_factor=args.expansion_factor, dw_parallel=not args.no_dw_parallel, add=not args.concatenation, lgag_ks=args.lgag_ks, activation=args.activation_mscb, encoder=args.encoder, pretrain= not args.no_pretrain)
+    model = EMCADNet(num_classes=args.num_classes, 
+                     kernel_sizes=args.kernel_sizes, 
+                     expansion_factor=args.expansion_factor, 
+                     dw_parallel=not args.no_dw_parallel, 
+                     add=not args.concatenation, 
+                     lgag_ks=args.lgag_ks, 
+                     activation=args.activation_mscb, 
+                     encoder=args.encoder, 
+                     pretrain= not args.no_pretrain)
 
     model.cuda()
 
