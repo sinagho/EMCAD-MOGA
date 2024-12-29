@@ -1,0 +1,9 @@
+[11:54:17.707] Namespace(root_path='/cabinet/dataset/Synapse/train_npz', volume_path='/cabinet/dataset/Synapse/test_vol_h5', dataset='Synapse', list_dir='./lists/lists_Synapse', num_classes=9, encoder='pvt_v2_b2', expansion_factor=2, kernel_sizes=[1, 3, 5], lgag_ks=3, activation_mscb='relu6', no_dw_parallel=False, concatenation=False, no_pretrain=False, supervision='mutation', max_iterations=50000, max_epochs=400, batch_size=6, base_lr=0.05, img_size=224, n_gpu=1, deterministic=1, seed=2222, z_spacing=1, exp='pvt_v2_b2_EMCAD_kernel_sizes_[1, 3, 5]_dw_parallel_add_lgag_ks_3_ef2_act_mscb_relu6_loss_mutation_output_final_layer_Run1_Synapse224')
+[11:54:17.718] 369 iterations per epoch. 147600 max iterations 
+[11:54:27.674] iteration 50, epoch 0 : loss : 725.591553, lr: 0.050000
+[11:54:35.558] iteration 100, epoch 0 : loss : 53185.828125, lr: 0.050000
+[11:54:43.627] iteration 150, epoch 0 : loss : 1485952.625000, lr: 0.050000
+[11:54:51.564] iteration 200, epoch 0 : loss : 72051.617188, lr: 0.050000
+[11:55:07.836] Namespace(root_path='/cabinet/dataset/Synapse/train_npz', volume_path='/cabinet/dataset/Synapse/test_vol_h5', dataset='Synapse', list_dir='./lists/lists_Synapse', num_classes=9, encoder='pvt_v2_b2', expansion_factor=2, kernel_sizes=[1, 3, 5], lgag_ks=3, activation_mscb='relu6', no_dw_parallel=False, concatenation=False, no_pretrain=False, supervision='mutation', max_iterations=50000, max_epochs=400, batch_size=6, base_lr=0.05, img_size=224, n_gpu=1, deterministic=1, seed=2222, z_spacing=1, exp='pvt_v2_b2_EMCAD_kernel_sizes_[1, 3, 5]_dw_parallel_add_lgag_ks_3_ef2_act_mscb_relu6_loss_mutation_output_final_layer_Run1_Synapse224')
+[11:55:07.846] 369 iterations per epoch. 147600 max iterations 
+[11:55:17.424] iteration 50, epoch 0 : loss : 3220.617432, lr: 0.050000

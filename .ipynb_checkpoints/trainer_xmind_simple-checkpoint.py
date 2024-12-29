@@ -4,6 +4,7 @@ import os
 import random
 import sys
 import time
+import glob
 import numpy as np
 import torch
 import torch.nn as nn
@@ -12,11 +13,11 @@ from tensorboardX import SummaryWriter
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from utils__ import DiceLoss, BoundaryDoULoss, JaccardLoss
+from utils_ import DiceLoss
 from torchvision import transforms
-from utils__ import test_single_volume
+from utils_ import test_single_volume
 from torch.nn import functional as F
-from datasets.dateset_synapse import Synapse_dataset, RandomGenerator, SynapseDatasetFast
+from datasets.dataset_synapse import Synapse_dataset, RandomGenerator, SynapseDatasetFast
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -74,8 +75,7 @@ def trainer_synapse(args, model, snapshot_path):
     os.makedirs(os.path.join(snapshot_path, 'test'), exist_ok=True)
     test_save_path = os.path.join(snapshot_path, 'test')
 
-    log_filename = f'{snapshot_path}' + '/log_' + f'{args.model_name}' + '.txt'
-    logging.basicConfig(filename=log_filename, level=logging.INFO,
+    logging.basicConfig(filename=snapshot_path + "/log.txt", level=logging.INFO,
                         format='[%(asctime)s.%(msecs)03d] %(message)s', datefmt='%H:%M:%S')
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     logging.info(str(args))
@@ -91,9 +91,14 @@ def trainer_synapse(args, model, snapshot_path):
     ])
     y_transforms = transforms.ToTensor()
 
-    db_train = Synapse_dataset(base_dir=args.root_path, list_dir=args.list_dir, split="train",img_size=args.img_size,
+    if args.dstr_fast:
+        print("\n\nUSING FAST DATASET...\n")
+        db_train = SynapseDatasetFast(base_dir=args.root_path, list_dir=args.list_dir, split="train",img_size=args.img_size,
                                norm_x_transform = x_transforms, norm_y_transform = y_transforms)
-
+    else:
+        db_train = Synapse_dataset(base_dir=args.root_path, list_dir=args.list_dir, split="train",img_size=args.img_size,
+                               norm_x_transform = x_transforms, norm_y_transform = y_transforms)
+    
     print("The length of train set is: {}".format(len(db_train)))
     def worker_init_fn(worker_id):
         random.seed(args.seed + worker_id)
@@ -103,18 +108,37 @@ def trainer_synapse(args, model, snapshot_path):
 
     db_test = Synapse_dataset(base_dir=args.test_path, split="test_vol", list_dir=args.list_dir, img_size=args.img_size)
     testloader = DataLoader(db_test, batch_size=1, shuffle=False, num_workers=1)
+    
+    curr_epoch = 0
+    if args.continue_tr:
+        snapshot = os.path.join(args.output_dir, 'best_model.pth')
+        if not os.path.exists(snapshot):
+            saved_models = glob.glob(f"{args.output_dir}/{args.model_name}_epoch_*.pth")
+            if len(saved_models):
+                saved_eps = [int(ep.split("/")[-1].split('_')[-1][:-4]) for ep in saved_models]
+                max_saved_eps = max(saved_eps)
+                snapshot = snapshot.replace('best_model', args.model_name+'_epoch_'+str(max_saved_eps))
+                msg = model.load_state_dict(torch.load(snapshot))
+                print(f"Loaded {snapshot}", msg)
+                curr_epoch = max_saved_eps+1
+            else:
+                print("\nThere was no pre-trained model to continue!\nStart training from zero...\n")
 
     if args.n_gpu > 1:
         model = nn.DataParallel(model)
 
     model.train()
 
-    jc_loss = JaccardLoss()
     ce_loss = CrossEntropyLoss()
     dice_loss = DiceLoss(num_classes)
-    boundary_loss = BoundaryDoULoss(num_classes)
-    optimizer = optim.SGD(model.parameters(), lr=base_lr, momentum=0.9, weight_decay=0.0001)
-    #optimizer = optim.AdamW(model.parameters(),lr=base_lr, weight_decay=0.0001)
+
+    if args.optimizer.lower() == 'sgd':
+        optimizer = optim.SGD(model.parameters(), lr=base_lr, momentum=0.9, weight_decay=0.0001)
+    else: #AdamW
+        optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=0.0)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=10)
+
+
     writer = SummaryWriter(snapshot_path + '/log')
     iter_num = 0
     max_epoch = args.max_epochs
@@ -123,14 +147,16 @@ def trainer_synapse(args, model, snapshot_path):
 
     best_performance = 0.0
     iterator = tqdm(range(max_epoch), ncols=70)
+    
+    if curr_epoch > 0:
+        for epoch_num in iterator:
+            iter_num += len(trainloader)
+            curr_epoch -= 1
+            if not curr_epoch: break
+    
     dice_=[]
     hd95_= []
-    acc_loss = 0.0
-    acc_loss_ce = 0.0
-    acc_loss_dc = 0.0
-    acc_loss_bo = 0.0
-    acc_loss_jc = 0.0
-
+    dlw = args.dice_loss_weight # default: 0.6
     for epoch_num in iterator:
         for i_batch, sampled_batch in enumerate(trainloader):
             image_batch, label_batch = sampled_batch['image'], sampled_batch['label']
@@ -138,19 +164,12 @@ def trainer_synapse(args, model, snapshot_path):
             image_batch, label_batch = image_batch.cuda(), label_batch.squeeze(1).cuda()
             outputs = model(image_batch)
             # outputs = F.interpolate(outputs, size=label_batch.shape[1:], mode='bilinear', align_corners=False)
-            #loss_ce = ce_loss(outputs, label_batch[:].long())
-            #loss_dice = dice_loss(outputs, label_batch, softmax=True)
-            #loss_jacard = jc_loss(outputs, label_batch)
-            loss_boundary = boundary_loss(outputs, label_batch[:])
-
-            #loss = 0.4 * loss_ce + 0.6 * loss_dice
-            loss2 = loss_boundary
-            #loss3 = 0.5 * loss_ce + 0.5 * loss_jacard
+            loss_ce = ce_loss(outputs, label_batch[:].long())
+            loss_dice = dice_loss(outputs, label_batch, softmax=True)
+            loss = (1-dlw)*loss_ce + dlw*loss_dice
             # print("loss-----------", loss)
             optimizer.zero_grad()
-            #loss.backward()
-            loss2.backward()
-            #loss3.backward()
+            loss.backward()
             optimizer.step()
 
             lr_ = base_lr * (1.0 - iter_num / max_iterations) ** 0.9
@@ -159,32 +178,13 @@ def trainer_synapse(args, model, snapshot_path):
 
             iter_num = iter_num + 1
             writer.add_scalar('info/lr', lr_, iter_num)
-            writer.add_scalar('info/boundary_loss', loss2, iter_num)
-            #writer.add_scalar('info/jaccard_loss', loss3, iter_num)
-            #writer.add_scalar('info/total_loss', loss, iter_num)
-            #writer.add_scalar('info/loss_ce', loss_ce, iter_num)
-            #writer.add_scalar('info/loss_dice', loss_dice, iter_num)
+            writer.add_scalar('info/total_loss', loss, iter_num)
+            writer.add_scalar('info/loss_ce', loss_ce, iter_num)
+            writer.add_scalar('info/loss_dice', loss_dice, iter_num)
 
-            #acc_loss += loss.item()
-            #acc_loss_dc += loss_dice.item()
-            #acc_loss_ce += loss_ce.item()
-            acc_loss_bo += loss2.item()
-            #acc_loss_jc += loss3.item()
+            logging.info('iteration %d : loss : %f, loss_ce: %f, loss_dice: %f' % (iter_num, loss.item(), loss_ce.item(), loss_dice.item()))
 
-            if iter_num % 100 == 0:
-                #acc_loss = acc_loss / 100
-                #acc_loss_ce = acc_loss_ce / 100
-                #acc_loss_dc = acc_loss_dc / 100
-                acc_loss_bo = acc_loss_bo / 100
-                #acc_loss_jc = acc_loss_jc / 100
-                logging.info('iteration %d : loss_boundary: %f' % (iter_num,acc_loss_bo))
-                #acc_loss = 0.0
-                #acc_loss_ce = 0.0
-                #acc_loss_dc = 0.0
-                acc_loss_bo = 0.0
-                #acc_loss_jc = 0.0
-
-            if iter_num % 100 == 0:
+            if iter_num % 20 == 0:
                 image = image_batch[1, 0:1, :, :]
                 image = (image - image.min()) / (image.max() - image.min())
                 writer.add_image('train/Image', image, iter_num)
@@ -197,7 +197,7 @@ def trainer_synapse(args, model, snapshot_path):
         # Test
         eval_interval = args.eval_interval 
         if epoch_num >= int(max_epoch / 2) and (epoch_num + 1) % eval_interval == 0:
-            filename = f'{args.model_name}_seed_{args.seed}_epoch_{epoch_num}.pth'
+            filename = f'{args.model_name}_epoch_{epoch_num}.pth'
             save_mode_path = os.path.join(snapshot_path, filename)
             torch.save(model.state_dict(), save_mode_path)
             logging.info("save model to {}".format(save_mode_path))
@@ -211,7 +211,7 @@ def trainer_synapse(args, model, snapshot_path):
             model.train()
 
         if epoch_num >= max_epoch - 1:
-            filename = f'{args.model_name}_seed_{args.seed}_epoch_{epoch_num}.pth'
+            filename = f'{args.model_name}_epoch_{epoch_num}.pth'
             save_mode_path = os.path.join(snapshot_path, filename)
             torch.save(model.state_dict(), save_mode_path)
             logging.info("save model to {}".format(save_mode_path))

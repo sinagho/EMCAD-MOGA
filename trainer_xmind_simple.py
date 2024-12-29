@@ -10,7 +10,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from tensorboardX import SummaryWriter
-from utils.dataset_synapse import Synapse_dataset, RandomGenerator
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -18,7 +17,7 @@ from utils_ import DiceLoss
 from torchvision import transforms
 from utils_ import test_single_volume
 from torch.nn import functional as F
-
+from datasets.dateset_synapse import Synapse_dataset, RandomGenerator, SynapseDatasetFast
 
 import matplotlib.pyplot as plt
 import pandas as pd
