@@ -5,7 +5,7 @@ import random
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
-from lib.networks import EMCADNetv3 as Model
+from lib.networks import EMCADNetv3, EMCADNetv4, EMCADNetv5
 # from networks.WaveFormerCompact import Model as ModelCompact
 
 from trainer_xmind_bou import trainer_synapse
@@ -54,7 +54,7 @@ parser.add_argument('--num_workers', type=int,
 parser.add_argument('--eval_interval', type=int,
                     default=20, help='eval_interval')
 parser.add_argument('--model_name', type=str,
-                    default='WaveFormer', help='model_name')
+                    default='mogav5', help='model_name')
 parser.add_argument('--n_gpu', type=int, default=1, help='total gpu')
 
 parser.add_argument('--bridge_layers', type=int, default=1, help='number of bridge layers')
@@ -143,17 +143,9 @@ if __name__ == "__main__":
         dw_mode = 'series'
     else: 
         dw_mode = 'parallel'
-
-    if args.compact:
-        net = ModelCompact(
-            num_classes=args.num_classes, 
-            bridge_layers=args.bridge_layers,
-            encoder_L_num=args.en_lnum, 
-            bridge_L_num=args.br_lnum, 
-            decoder_L_num=args.de_lnum
-        ).cuda(0)
-    else:
-        net = Model(
+    
+    if args.model_name =="mogav3":
+        net = EMCADNetv3(
             num_classes=args.num_classes, 
             kernel_sizes=args.kernel_sizes, 
             expansion_factor=args.expansion_factor, 
@@ -164,6 +156,31 @@ if __name__ == "__main__":
             encoder=args.encoder, 
             pretrain= not args.no_pretrain
         ).cuda(0)
+    elif args.model_name =="mogav4":
+        net = EMCADNetv4(
+            num_classes=args.num_classes, 
+            kernel_sizes=args.kernel_sizes, 
+            expansion_factor=args.expansion_factor, 
+            dw_parallel=not args.no_dw_parallel, 
+            add=not args.concatenation, 
+            lgag_ks=args.lgag_ks, 
+            activation=args.activation_mscb, 
+            encoder=args.encoder, 
+            pretrain= not args.no_pretrain
+        ).cuda(0)
+    elif args.model_name =="mogav5":
+        net = EMCADNetv5(
+            num_classes=args.num_classes, 
+            kernel_sizes=args.kernel_sizes, 
+            expansion_factor=args.expansion_factor, 
+            dw_parallel=not args.no_dw_parallel, 
+            add=not args.concatenation, 
+            lgag_ks=args.lgag_ks, 
+            activation=args.activation_mscb, 
+            encoder=args.encoder, 
+            pretrain= not args.no_pretrain
+        ).cuda(0)
+        
 
     trainer = {'Synapse': trainer_synapse,}
     trainer[dataset_name](args, net, args.output_dir)
