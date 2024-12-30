@@ -8,7 +8,7 @@ import torch.backends.cudnn as cudnn
 from lib.networks import EMCADNetv3 as Model
 # from networks.WaveFormerCompact import Model as ModelCompact
 
-from trainer import trainer_synapse
+from trainer_xmind_bou import trainer_synapse
 import warnings
 warnings.filterwarnings('ignore')
 
